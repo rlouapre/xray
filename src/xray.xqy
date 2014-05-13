@@ -126,7 +126,7 @@ declare private function apply(
       map:entry(xdmp:key-from-QName(xs:QName("before-each")), if (fn:exists($fn-before)) then $fn-before ! (fn:function-name(.)) else <noop/>),
       map:entry(xdmp:key-from-QName(xs:QName("after-each")), if (fn:exists($fn-after)) then $fn-after ! (fn:function-name(.)) else <noop/>)
     ))
-    let $function := if (fn:exists($fn)) then 'test:' || fn-local-name($fn) || '()' else '()'
+    let $function := 'test:' || fn-local-name($fn) || '()'
     return
     xdmp:eval('
       xquery version "1.0-ml";
@@ -139,7 +139,7 @@ declare private function apply(
         if($xray:before-each instance of element()) then ()
         else $xray:before-each ! (xdmp:apply(xdmp:function(.)))
       let $start := xdmp:elapsed-time()
-      let $results := ' || $function || '
+      let $results := try {' || $function || ' } catch($err) { $err }
       let $duration := xdmp:elapsed-time() - $start
       let $_ := 
         if($xray:after-each instance of element()) then ()
@@ -217,7 +217,6 @@ declare function run-module-tests(
     return $f
   let $before-each := $fns[has-test-annotation(., "before-each")]
   let $after-each := $fns[has-test-annotation(., "after-each")]
-  let $_ := xdmp:log(("$before-each", $before-each, "$after-each", $after-each))
   return (
     map:get(apply($fns[has-test-annotation(., "setup")], $path), "results"),
     run-test($before-each, ($fns[has-test-annotation(., "case") or has-test-annotation(., "ignore")]), $after-each, $path),

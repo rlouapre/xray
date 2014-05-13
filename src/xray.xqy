@@ -5,6 +5,8 @@ declare namespace test = "http://github.com/robwhitby/xray/test";
 import module namespace modules = "http://github.com/robwhitby/xray/modules" at "modules.xqy";
 declare default element namespace "http://github.com/robwhitby/xray";
 
+declare option xdmp:mapping "true";
+
 declare variable $XRAY-VERSION := "2.0";
 
 declare function run-tests(
@@ -51,12 +53,15 @@ declare function run-tests(
 
 
 declare function run-test(
-  $fn as function(*),
+  $fn-before as function(*)*,
+  $fns as function(*),
+  $fn-after as function(*)*,
   $path as xs:string
-) as element(test)
+) as element(test)*
 {
+  for $fn in $fns
   let $ignore := has-test-annotation($fn, "ignore")
-  let $map := if ($ignore) then () else xray:apply($fn, $path)
+  let $map := if ($ignore) then () else xray:apply($fn-before, $fn, $fn-after, $path)
   let $test := map:get($map, "results")
   let $time := map:get($map, "time")
   return element test {
@@ -71,7 +76,6 @@ declare function run-test(
     $test
   }
 };
-
 
 declare function assert-response(
   $assertion as xs:string,
@@ -96,6 +100,16 @@ declare private function apply(
   $path as xs:string
 ) as item()*
 {
+  apply((), $fn, (), $path)
+};
+
+declare private function apply(
+  $fn-before as function(*)*,
+  $fn as function(*),
+  $fn-after as function(*)*,
+  $path as xs:string
+) as item()*
+{
   (: The test tool itself should always run in timestamped mode. :)
   if (xdmp:request-timestamp()) then ()
   else fn:error((), "UPDATE", "Query must be read-only but contains updates"),
@@ -108,24 +122,60 @@ declare private function apply(
    : So we build a query string from the function data, and eval it.
    :)
   try {
+    let $vars := map:new((
+      map:entry(xdmp:key-from-QName(xs:QName("before-each")), if (fn:exists($fn-before)) then $fn-before ! (fn:function-name(.)) else <noop/>),
+      map:entry(xdmp:key-from-QName(xs:QName("after-each")), if (fn:exists($fn-after)) then $fn-after ! (fn:function-name(.)) else <noop/>)
+    ))
+    let $function := if (fn:exists($fn)) then 'test:' || fn-local-name($fn) || '()' else '()'
+    return
     xdmp:eval('
       xquery version "1.0-ml";
+      declare namespace xray = "http://github.com/robwhitby/xray";
       import module namespace test = "http://github.com/robwhitby/xray/test" at "' || $path || '";
+      declare variable $xray:before-each external;
+      declare variable $xray:after-each external;
 
+      let $_ := 
+        if($xray:before-each instance of element()) then ()
+        else $xray:before-each ! (xdmp:apply(xdmp:function(.)))
       let $start := xdmp:elapsed-time()
-      let $results := try { test:' || fn-local-name($fn) || '() } catch($err) { $err }
+      let $results := ' || $function || '
       let $duration := xdmp:elapsed-time() - $start
+      let $_ := 
+        if($xray:after-each instance of element()) then ()
+        else $xray:after-each ! (xdmp:apply(xdmp:function(.)))
       let $map := map:map()
       let $_ := (
         map:put($map, "results", $results),
         map:put($map, "time", $duration)
       )
       return $map
-    ')
+    ',
+    $vars)
   }
   catch * { $err:additional }
 };
 
+declare private function get-each-annotation(
+  $fn as function(*),
+  $name as xs:string
+) as item()* {
+  let $values := xdmp:annotation($fn, xs:QName("test:" || $name))
+  return
+  if ($values instance of xs:boolean) then ()
+  else
+    let $eval := (($values ! (if (fn:starts-with(., "eval=")) then fn:substring-after(., "eval=") else ())), "true")[1]
+    let $isolation := 
+    if ($eval eq "true") then
+      (($values ! (if (fn:starts-with(., "isolation=")) then fn:substring-after(., "isolation=") else ())), "different")[1]
+    else ()
+    return
+    element annotation {
+      element eval { $eval },
+      if ($isolation) then element isolation { $isolation }
+      else ()
+    }
+};
 
 declare function run-module(
   $path as xs:string,
@@ -135,7 +185,7 @@ declare function run-module(
   try {
     xdmp:eval('
       xquery version "1.0-ml";
-      import module namespace xray = "http://github.com/robwhitby/xray";
+      import module namespace xray = "http://github.com/robwhitby/xray" at "/xray/src/xray.xqy";
       import module namespace test = "http://github.com/robwhitby/xray/test" at "' || $path || '";
       declare variable $xray:path as xs:string external;
       declare variable $xray:test-pattern as xs:string external;
@@ -152,7 +202,6 @@ declare function run-module(
   }
 };
 
-
 declare function run-module-tests(
   $path as xs:string,
   $test-pattern as xs:string
@@ -161,14 +210,27 @@ declare function run-module-tests(
   let $fns :=
     for $f in xdmp:functions()
     let $name := fn-local-name($f)
-    where has-test-annotation($f, ("case", "ignore", "setup", "teardown")) and fn:matches($name, $test-pattern)
+    where 
+      has-test-annotation($f, ("setup", "teardown")) or 
+      has-test-annotation($f, ("case", "ignore", "before-each", "after-each")) and fn:matches($name, $test-pattern)
     order by $name
     return $f
+  let $before-each := $fns[has-test-annotation(., "before-each")]
+  let $after-each := $fns[has-test-annotation(., "after-each")]
+  let $_ := xdmp:log(("$before-each", $before-each, "$after-each", $after-each))
   return (
     map:get(apply($fns[has-test-annotation(., "setup")], $path), "results"),
-    run-test($fns[has-test-annotation(., "case") or has-test-annotation(., "ignore")], $path),
+    run-test($before-each, ($fns[has-test-annotation(., "case") or has-test-annotation(., "ignore")]), $after-each, $path),
     map:get(apply($fns[has-test-annotation(., "teardown")], $path), "results")
   )
+};
+
+declare function get-test-annotation(
+  $fn as function(*),
+  $name as xs:string
+) as item()*
+{
+  xdmp:annotation($fn, xs:QName("test:" || $name))
 };
 
 declare function has-test-annotation(
@@ -178,7 +240,6 @@ declare function has-test-annotation(
 {
   fn:exists(xdmp:annotation($fn, xs:QName("test:" || $name)))
 };
-
 
 declare private function fn-local-name(
   $fn as function(*)

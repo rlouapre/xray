@@ -16,7 +16,11 @@ declare function run-tests(
   $format as xs:string?
 ) as item()*
 {
-  let $modules as xs:string* := modules:get-modules($test-dir, fn:string($module-pattern))
+  let $modules as xs:string* := modules:get-modules($test-dir, fn:string($module-pattern)) ! (
+    if (fn:ends-with(., "-test.xqy")) then .
+    else ()
+  )
+  let $_ := xdmp:log(("$modules", $modules))
   let $tests :=
     element tests {
       attribute dir { $test-dir },

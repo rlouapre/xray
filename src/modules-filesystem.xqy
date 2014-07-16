@@ -8,10 +8,7 @@ declare function get-modules(
   $pattern as xs:string?
 ) as xs:string*
 {
-  let $test-dir :=
-    if (xdmp:platform() eq "winnt")
-    then fn:replace($test-dir, "/", "\\")
-    else fn:replace($test-dir, "\\", "/")
+  let $test-dir := fn:replace($test-dir, "\\", "/")
   let $fs-dir := fn:concat(xdmp:modules-root(), fn:replace($test-dir, "^[/\\]+", ""))
   where filesystem-directory-exists($fs-dir)
   return 
@@ -29,7 +26,7 @@ declare private function module-filenames(
     if ($entry/dir:type = "file")
     then
       if (fn:matches($entry/dir:pathname, "\.xqy?$"))
-      then $entry/dir:pathname/fn:string()
+      then fn:replace($entry/dir:pathname/fn:string(), "\\", "/")
       else ()
     else module-filenames($entry/dir:pathname/fn:string())
 };
